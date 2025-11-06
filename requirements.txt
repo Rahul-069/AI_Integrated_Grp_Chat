@@ -1,0 +1,10 @@
+flask
+flask-socketio
+eventlet
+bcrypt
+gunicorn
+Flask-SQLAlchemy
+psycopg2-binary
+python-dotenv
+google-generativeai
+flask-caching

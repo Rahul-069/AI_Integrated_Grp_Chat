@@ -222,7 +222,7 @@ def chat():
                              username=session["username"],
                              recent_messages=[])
 
-@app.route("/logout")
+@app.route("/logout", methods=["GET", "POST"])
 def logout():
     username = session.get("username")
     user_id = session.get("user_id")
@@ -417,3 +417,4 @@ if __name__ == "__main__":
         allow_unsafe_werkzeug=True
 
     )
+

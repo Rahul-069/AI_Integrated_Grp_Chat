@@ -9,7 +9,7 @@ class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-change-in-production'
     # SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL', 'sqlite:///chatapp.db')
     # SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'sqlite:///chat.db'
-    SQLALCHEMY_DATABASE_URI = postgresql://grp_chat_db_user:hIYLyVW936DWfcCxwYAAKHndkzad9tVk@dpg-d46h4t3ipnbc73dh12t0-a/grp_chat_db
+    SQLALCHEMY_DATABASE_URI = "postgresql://grp_chat_db_user:hIYLyVW936DWfcCxwYAAKHndkzad9tVk@dpg-d46h4t3ipnbc73dh12t0-a/grp_chat_db"
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {
         'pool_pre_ping': True,  # Verify connections before using
@@ -28,7 +28,7 @@ class Config:
 class DevelopmentConfig(Config):
     """Development configuration"""
     DEBUG = False
-    SQLALCHEMY_DATABASE_URI = postgresql://grp_chat_db_user:hIYLyVW936DWfcCxwYAAKHndkzad9tVk@dpg-d46h4t3ipnbc73dh12t0-a/grp_chat_db
+    SQLALCHEMY_DATABASE_URI = "postgresql://grp_chat_db_user:hIYLyVW936DWfcCxwYAAKHndkzad9tVk@dpg-d46h4t3ipnbc73dh12t0-a/grp_chat_db"
 
 class ProductionConfig(Config):
     """Production configuration"""
@@ -43,3 +43,4 @@ config = {
     'default': DevelopmentConfig
 
 }
+

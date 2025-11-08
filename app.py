@@ -8,6 +8,7 @@ import os
 import logging
 from logging.handlers import RotatingFileHandler
 from flask_caching import Cache
+from sqlalchemy import text
 
 class FilteredLogger(logging.Filter):
     def filter(self, record):
@@ -248,7 +249,7 @@ def logout():
 def health():
     """Health check endpoint"""
     try:
-        db.session.execute('SELECT 1')
+        db.session.execute(text('SELECT 1'))
         return jsonify({
             "status": "healthy",
             "database": "connected",
@@ -414,4 +415,5 @@ if __name__ == "__main__":
         port=port,
         debug=False,
         allow_unsafe_werkzeug=True
+
     )

@@ -7,7 +7,6 @@ import bcrypt
 import os
 import logging
 from logging.handlers import RotatingFileHandler
-from flask_caching import Cache
 from sqlalchemy import text
 
 class FilteredLogger(logging.Filter):
@@ -19,11 +18,6 @@ werkzeug_logger.addFilter(FilteredLogger())
 
 # Initialize Flask app
 app = Flask(__name__)
-
-# Configure caching
-app.config['CACHE_TYPE'] = 'SimpleCache'
-app.config['CACHE_DEFAULT_TIMEOUT'] = 60
-cache = Cache(app)
 
 # Logging setup
 logging.basicConfig(
@@ -53,7 +47,7 @@ def init_database():
             db.create_all()
             User.query.update({'is_logged_in': False})
             db.session.commit()
-            app.logger.info("Database initialized successfully")
+            app.logger.info("Database initialized successfully - NO CACHE MODE")
     except Exception as e:
         app.logger.error(f"Database initialization failed: {e}")
         print(f"WARNING: Could not initialize database: {e}")
@@ -78,10 +72,9 @@ def handle_exception(error):
     app.logger.error(f'Unhandled exception: {error}', exc_info=True)
     return render_template('500.html'), 500
 
-# ==================== HELPER FUNCTIONS ====================
-@cache.memoize(timeout=60)
+# ==================== HELPER FUNCTIONS (NO CACHE) ====================
 def get_recent_messages(limit=50):
-    """Fetch recent messages with caching"""
+    """Fetch recent messages WITHOUT caching"""
     try:
         messages = Message.query.order_by(Message.timestamp.desc()).limit(limit).all()
         return [msg.to_dict() for msg in reversed(messages)]
@@ -89,18 +82,8 @@ def get_recent_messages(limit=50):
         app.logger.error(f'Error fetching messages: {e}')
         return []
 
-def invalidate_message_cache():
-    """Invalidate message cache when new messages are added"""
-    try:
-        cache.delete_memoized(get_recent_messages)
-        cache.delete_memoized(get_cached_summary)
-        cache.delete_memoized(get_cached_answer)
-    except Exception as e:
-        app.logger.error(f'Error invalidating cache: {e}')
-
-@cache.memoize(timeout=300)
 def get_cached_summary(limit):
-    """Get cached summary of messages (5 min cache)"""
+    """Get summary of messages - NO CACHE"""
     try:
         messages = Message.query.order_by(Message.timestamp.desc()).limit(limit).all()
         messages_data = [{"username": m.author.username, "message": m.content} for m in reversed(messages)]
@@ -109,9 +92,8 @@ def get_cached_summary(limit):
         app.logger.error(f'Summary error: {e}')
         return None, 0
 
-@cache.memoize(timeout=300)
 def get_cached_answer(question, limit):
-    """Get cached answer for a question (5 min cache)"""
+    """Get answer for a question - NO CACHE"""
     try:
         messages = Message.query.order_by(Message.timestamp.desc()).limit(limit).all()
         messages_data = [{"username": m.author.username, "message": m.content} for m in reversed(messages)]
@@ -120,9 +102,8 @@ def get_cached_answer(question, limit):
         app.logger.error(f'Answer error: {e}')
         return None
 
-@cache.memoize(timeout=120)
 def get_cached_smart_replies():
-    """Get cached smart replies (2 min cache)"""
+    """Get smart replies - NO CACHE"""
     try:
         messages = Message.query.order_by(Message.timestamp.desc()).limit(10).all()
         messages_data = [{"username": m.author.username, "message": m.content} for m in reversed(messages)]
@@ -253,7 +234,8 @@ def health():
         return jsonify({
             "status": "healthy",
             "database": "connected",
-            "active_users": len(clients)
+            "active_users": len(clients),
+            "cache_enabled": False
         }), 200
     except Exception as e:
         app.logger.error(f'Health check failed: {e}')
@@ -266,7 +248,7 @@ def health():
 # ==================== AI ENDPOINTS ====================
 @app.route("/api/summarize", methods=["POST"])
 def api_summarize():
-    """Summarize recent chat messages"""
+    """Summarize recent chat messages - NO CACHE"""
     if "username" not in session:
         return jsonify({"error": "Unauthorized"}), 401
     
@@ -279,7 +261,7 @@ def api_summarize():
         if summary is None:
             return jsonify({"error": "Failed to generate summary"}), 500
         
-        app.logger.info(f'Summary generated for: {session["username"]} (limit: {limit})')
+        app.logger.info(f'Summary generated for: {session["username"]} (limit: {limit}) - NO CACHE')
         return jsonify({"summary": summary, "message_count": message_count})
         
     except Exception as e:
@@ -288,7 +270,7 @@ def api_summarize():
 
 @app.route("/api/ask", methods=["POST"])
 def api_ask():
-    """Ask AI a question"""
+    """Ask AI a question - NO CACHE"""
     if "username" not in session:
         return jsonify({"error": "Unauthorized"}), 401
     
@@ -307,7 +289,7 @@ def api_ask():
         if answer is None:
             return jsonify({"error": "Failed to answer question"}), 500
         
-        app.logger.info(f'AI question answered for: {session["username"]}')
+        app.logger.info(f'AI question answered for: {session["username"]} - NO CACHE')
         return jsonify({"answer": answer, "question": question})
         
     except Exception as e:
@@ -316,7 +298,7 @@ def api_ask():
 
 @app.route("/api/smart-replies", methods=["GET"])
 def api_smart_replies():
-    """Get smart reply suggestions"""
+    """Get smart reply suggestions - NO CACHE"""
     if "username" not in session:
         return jsonify({"error": "Unauthorized"}), 401
     
@@ -362,9 +344,6 @@ def handle_message(msg):
             new_message = Message(content=msg, user_id=user.id)
             db.session.add(new_message)
             db.session.commit()
-            
-            # Invalidate cache when new message is added
-            invalidate_message_cache()
             
             emit('chat', new_message.to_dict(), broadcast=True)
             app.logger.debug(f'Message from {username}')
@@ -415,5 +394,4 @@ if __name__ == "__main__":
         port=port,
         debug=False,
         allow_unsafe_werkzeug=True
-
     )

@@ -311,7 +311,6 @@
     const chat = document.getElementById("chat");
     const username = "{{ username }}";
     const typingIndicator = document.getElementById("typing-indicator");
-    const latencyDisplay = document.getElementById("latency-display");
     
     let typingTimeout;
     let currentlyTyping = new Set();
@@ -320,13 +319,6 @@
     
     // Track message send times for latency calculation
     const messageSendTimes = new Map();
-    let latencyStats = {
-        total: 0,
-        count: 0,
-        min: Infinity,
-        max: 0,
-        recent: []
-    };
 
     // Initialize Speech Recognition
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -360,11 +352,11 @@
     socket.on('message_history', function(messages) {
         console.log(`📥 Loaded ${messages.length} messages from history`);
         messages.forEach(msg => {
-            displayMessage(msg.username, msg.message, msg.timestamp, false);
+            displayMessage(msg.username, msg.message, msg.timestamp);
         });
     });
 
-    function displayMessage(user, message, timestamp, isNew = true) {
+    function displayMessage(user, message, timestamp) {
         const div = document.createElement("div");
         const time = timestamp ? new Date(timestamp).toLocaleTimeString() : '';
         
@@ -404,44 +396,6 @@
         }
     }
 
-    function showLatency(latency) {
-        // Update stats
-        latencyStats.total += latency;
-        latencyStats.count++;
-        latencyStats.min = Math.min(latencyStats.min, latency);
-        latencyStats.max = Math.max(latencyStats.max, latency);
-        latencyStats.recent.push(latency);
-        if (latencyStats.recent.length > 10) {
-            latencyStats.recent.shift();
-        }
-        
-        const avg = latencyStats.total / latencyStats.count;
-        const recentAvg = latencyStats.recent.reduce((a, b) => a + b, 0) / latencyStats.recent.length;
-        
-        // Determine color based on latency
-        let className = 'good';
-        let emoji = '🟢';
-        if (latency > 200) {
-            className = 'bad';
-            emoji = '🔴';
-        } else if (latency > 100) {
-            className = 'ok';
-            emoji = '🟡';
-        }
-        
-        // Display latency
-        latencyDisplay.className = `show ${className}`;
-        latencyDisplay.innerHTML = `
-            ${emoji} <strong>${latency.toFixed(0)}ms</strong><br>
-            <small>Avg: ${recentAvg.toFixed(0)}ms | Min: ${latencyStats.min.toFixed(0)}ms | Max: ${latencyStats.max.toFixed(0)}ms</small>
-        `;
-        
-        // Auto-hide after 3 seconds
-        setTimeout(() => {
-            latencyDisplay.classList.remove('show');
-        }, 3000);
-    }
-
     socket.on('user_typing', function(data) {
         if (data.is_typing) {
             currentlyTyping.add(data.username);
@@ -471,22 +425,13 @@
             const messageText = input.value;
             const clientSendTime = performance.now();
             
-            // Store send time with a unique key (message + timestamp)
-            const messageKey = `${messageText}_${clientSendTime}`;
-            messageSendTimes.set(messageKey, clientSendTime);
+            // Store send time for this message
+            messageSendTimes.set(messageText, clientSendTime);
             
-            // Also store just by content for fallback
-            if (!messageSendTimes.has(messageText)) {
-                messageSendTimes.set(messageText, clientSendTime);
-            }
-            
-            console.log(`📤 [SEND] Message: "${messageText.substring(0, 30)}${messageText.length > 30 ? '...' : ''}"`);
-            console.log(`📤 [SEND] Client timestamp: ${clientSendTime.toFixed(2)}ms`);
-            
-            // Display message immediately (optimistic UI)
-            displayMessage(username, messageText, new Date().toISOString(), true);
+            console.log(`📤 Sending message: "${messageText.substring(0, 30)}${messageText.length > 30 ? '...' : ''}"`);
             
             socket.send(messageText);
+            addMessage(`You: ${messageText}`, "me");
             input.value = "";
             
             socket.emit('typing', { is_typing: false });
@@ -497,39 +442,29 @@
     socket.on("chat", function(data) {
         const receiveTime = performance.now();
         
-        // Try to find matching send time
-        const messageKey = `${data.content}_${data.client_sent_time}`;
-        let sendTime = messageSendTimes.get(messageKey) || messageSendTimes.get(data.content);
-        
         // Calculate latency if this is our own message coming back
-        if (data.username === username && sendTime) {
+        if (data.username === username && messageSendTimes.has(data.message)) {
+            const sendTime = messageSendTimes.get(data.message);
             const roundTripLatency = receiveTime - sendTime;
             
-            console.log('═══════════════════════════════════════════════════');
-            console.log(`⚡ ROUND TRIP LATENCY MEASUREMENT`);
-            console.log('═══════════════════════════════════════════════════');
-            console.log(`📨 Message: "${data.content.substring(0, 50)}${data.content.length > 50 ? '...' : ''}"`);
-            console.log(`⏱️  Round-trip time: ${roundTripLatency.toFixed(2)}ms`);
-            console.log(`📤 Sent at: ${sendTime.toFixed(2)}ms`);
-            console.log(`📥 Received at: ${receiveTime.toFixed(2)}ms`);
-            console.log(`✅ Status: Message delivered successfully`);
-            console.log('═══════════════════════════════════════════════════');
+            console.log(
+                `⚡ Message Delivery Latency:\n` +
+                `   Message: "${data.message.substring(0, 30)}${data.message.length > 30 ? '...' : ''}"\n` +
+                `   Round-trip time: ${roundTripLatency.toFixed(2)}ms\n` +
+                `   ✅ Message delivered successfully`
+            );
             
-            // Show visual latency indicator
-            showLatency(roundTripLatency);
+            // Clean up
+            messageSendTimes.delete(data.message);
             
-            // Clean up send time tracking
-            messageSendTimes.delete(messageKey);
-            messageSendTimes.delete(data.content);
-            
-            // Don't display own message again (already shown optimistically)
+            // Don't display own message again (already displayed optimistically)
             return;
         }
         
         // Display messages from other users
         if (data.username !== username) {
-            console.log(`📨 [RECEIVE] Message from ${data.username}: "${data.content.substring(0, 30)}${data.content.length > 30 ? '...' : ''}"`);
-            displayMessage(data.username, data.content, data.timestamp, true);
+            console.log(`📨 Received message from ${data.username}: "${data.message.substring(0, 30)}${data.message.length > 30 ? '...' : ''}"`);
+            displayMessage(data.username, data.message, data.timestamp);
         }
     });
 
@@ -541,9 +476,6 @@
     // Monitor connection status
     socket.on('connect', function() {
         console.log('✅ Connected to server');
-        console.log('═══════════════════════════════════════════════════');
-        console.log('💡 TIP: Send a message to see round-trip latency!');
-        console.log('═══════════════════════════════════════════════════');
     });
     
     socket.on('disconnect', function() {
@@ -775,3 +707,4 @@
 
 </body>
 </html>
+

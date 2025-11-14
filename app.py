@@ -478,25 +478,23 @@ def handle_message(msg):
         
         user = User.query.filter_by(username=username).first()
         if user:
-            # Create timestamp
-            timestamp = datetime.utcnow()
+            # Time database operation
+            db_start = time.time()
+            new_message = Message(content=msg, user_id=user.id)
+            db.session.add(new_message)
+            db.session.commit()
+            db_time = (time.time() - db_start) * 1000
             
-            # Add to batch queue (non-blocking)
-            queue_start = time.time()
-            message_batcher.add_message(msg, user.id, timestamp)
-            queue_time = (time.time() - queue_start) * 1000
+            # Invalidate cache
+            cache_start = time.time()
+            invalidate_message_cache()
+            cache_time = (time.time() - cache_start) * 1000
             
-            # Prepare message data for immediate broadcast
-            message_data = {
-                'id': None,  # Will be set after DB write
-                'content': msg,
-                'username': username,
-                'timestamp': timestamp.isoformat(),
-                'server_timestamp': time.time(),
-                'client_sent_time': time.time()  # For client-side latency calculation
-            }
+            # Prepare message with timestamp
+            message_data = new_message.to_dict()
+            message_data['server_timestamp'] = time.time()  # Add server timestamp
             
-            # Broadcast immediately (don't wait for DB)
+            # Broadcast message
             broadcast_start = time.time()
             emit('chat', message_data, broadcast=True)
             broadcast_time = (time.time() - broadcast_start) * 1000
@@ -506,15 +504,16 @@ def handle_message(msg):
             
             # Log performance metrics
             app.logger.info(
-                f'⚡ Message latency - '
+                f'⏱️  Message latency - '
                 f'User: {username}, '
-                f'Queue: {queue_time:.2f}ms, '
+                f'DB: {db_time:.2f}ms, '
+                f'Cache: {cache_time:.2f}ms, '
                 f'Broadcast: {broadcast_time:.2f}ms, '
-                f'Total: {total_time:.2f}ms '
-                f'(DB batch pending)'
+                f'Total: {total_time:.2f}ms'
             )
             
     except Exception as e:
+        db.session.rollback()
         app.logger.error(f'Message error: {e}')
         emit('error', {'message': 'Failed to send message'})
 
@@ -569,3 +568,4 @@ if __name__ == "__main__":
         debug=False,
         allow_unsafe_werkzeug=True
     )
+

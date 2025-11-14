@@ -380,22 +380,66 @@
             clearTimeout(typingTimeout);
         });
 
-        form.addEventListener("submit", function(e) {
-            e.preventDefault();
-            if (input.value) {
-                socket.send(input.value);
-                addMessage(`You: ${input.value}`, "me");
-                input.value = "";
-                
-                socket.emit('typing', { is_typing: false });
-                clearTimeout(typingTimeout);
-            }
-        });
+        // LATENCY TRACKING
+let pendingLatency = {};   // messageId → send timestamp
 
-        socket.on("chat", function(data) {
-            if (data.username === username) return;
-            displayMessage(data.username, data.message, data.timestamp);
-        });
+function generateId() {
+    return Math.random().toString(36).substring(2, 10);
+}
+
+// Override the send logic
+form.addEventListener("submit", function(e) {
+    e.preventDefault();
+    if (!input.value) return;
+
+    const msgId = generateId();
+    const clientSentTime = performance.now();
+    pendingLatency[msgId] = clientSentTime;
+
+    socket.emit("chat_message", {
+        id: msgId,
+        username: username,
+        message: input.value,
+        client_sent: clientSentTime
+    });
+
+    addMessage(`You: ${input.value}`, "me");
+    input.value = "";
+
+    socket.emit('typing', { is_typing: false });
+    clearTimeout(typingTimeout);
+});
+
+// Receiving message (from server)
+socket.on("chat", function(data) {
+
+    const clientReceivedTime = performance.now();
+    const serverReceived = data.server_received;
+    const serverBroadcast = data.server_broadcast;
+
+    // Compute latency only for your own messages
+    if (pendingLatency[data.id]) {
+        const clientSent = pendingLatency[data.id];
+
+        const c2s = serverReceived - clientSent;
+        const s2c = clientReceivedTime - serverBroadcast;
+        const total = clientReceivedTime - clientSent;
+
+        console.log(`📡 Latency for message ${data.id}`);
+        console.log(`Client → Server: ${c2s.toFixed(2)} ms`);
+        console.log(`Server → Client: ${s2c.toFixed(2)} ms`);
+        console.log(`End-to-End: ${total.toFixed(2)} ms`);
+        console.log("-------------------------------------");
+
+        delete pendingLatency[data.id];
+    }
+
+    // Do not duplicate your own message visually
+    if (data.username === username) return;
+
+    displayMessage(data.username, data.message, data.timestamp);
+});
+
 
         socket.on("system", function(msg) {
             addMessage(msg, "system");
@@ -636,3 +680,4 @@
 </body>
 
 </html>
+

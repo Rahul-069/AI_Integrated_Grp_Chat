@@ -66,6 +66,38 @@
             display: block;
         }
         
+        /* Latency Display */
+        #latency-display {
+            position: fixed;
+            bottom: 80px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 0.85em;
+            display: none;
+            z-index: 1000;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+        #latency-display.show {
+            display: block;
+            animation: fadeIn 0.3s;
+        }
+        #latency-display.good {
+            background: rgba(40, 167, 69, 0.9);
+        }
+        #latency-display.ok {
+            background: rgba(255, 193, 7, 0.9);
+        }
+        #latency-display.bad {
+            background: rgba(220, 53, 69, 0.9);
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
         /* AI Features */
         .ai-panel {
             background: #fff;
@@ -239,6 +271,9 @@
     <div id="chat"></div>
     <div id="typing-indicator"></div>
     
+    <!-- Latency Display -->
+    <div id="latency-display"></div>
+    
     <!-- AI Panel -->
     <div class="ai-panel" id="aiPanel">
         <button class="close-ai-btn" onclick="toggleAI()" title="Close AI Assistant">✕</button>
@@ -269,415 +304,471 @@
     </form>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
-    <script>
-        const socket = io({ transports: ["websocket"] });
-        const form = document.getElementById("form");
-        const input = document.getElementById("input");
-        const chat = document.getElementById("chat");
-        const username = "{{ username }}";
-        const typingIndicator = document.getElementById("typing-indicator");
+<script>
+    const socket = io({ transports: ["websocket"] });
+    const form = document.getElementById("form");
+    const input = document.getElementById("input");
+    const chat = document.getElementById("chat");
+    const username = "{{ username }}";
+    const typingIndicator = document.getElementById("typing-indicator");
+    const latencyDisplay = document.getElementById("latency-display");
+    
+    let typingTimeout;
+    let currentlyTyping = new Set();
+    let recognition = null;
+    let isRecording = false;
+    
+    // Track message send times for latency calculation
+    const messageSendTimes = new Map();
+    let latencyStats = {
+        total: 0,
+        count: 0,
+        min: Infinity,
+        max: 0,
+        recent: []
+    };
+
+    // Initialize Speech Recognition
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.lang = 'en-US';
         
-        let typingTimeout;
-        let currentlyTyping = new Set();
-        let recognition = null;
-        let isRecording = false;
-
-        // Initialize Speech Recognition
-        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = false;
-            recognition.lang = 'en-US';
-            
-            recognition.onresult = function(event) {
-                const transcript = event.results[0][0].transcript;
-                input.value = transcript;
-                isRecording = false;
-                document.getElementById('voiceBtn').classList.remove('recording');
-            };
-            
-            recognition.onerror = function(event) {
-                console.error('Speech recognition error:', event.error);
-                isRecording = false;
-                document.getElementById('voiceBtn').classList.remove('recording');
-                alert('Voice recognition error: ' + event.error);
-            };
-            
-            recognition.onend = function() {
-                isRecording = false;
-                document.getElementById('voiceBtn').classList.remove('recording');
-            };
-        }
-
-        // Display message history
-        socket.on('message_history', function(messages) {
-            messages.forEach(msg => {
-                displayMessage(msg.username, msg.message, msg.timestamp);
-            });
-        });
-
-        function displayMessage(user, message, timestamp) {
-            const div = document.createElement("div");
-            const time = timestamp ? new Date(timestamp).toLocaleTimeString() : '';
-            
-            if (user === username) {
-                div.classList.add("message", "me");
-                div.innerHTML = `You: ${message}<span class="timestamp">${time}</span>`;
-            } else {
-                div.classList.add("message", "other");
-                div.innerHTML = `<strong>${user}</strong>: ${message}<span class="timestamp">${time}</span>`;
-            }
-            
-            chat.appendChild(div);
-            chat.scrollTop = chat.scrollHeight;
-        }
-
-        function addMessage(text, type) {
-            const div = document.createElement("div");
-            div.classList.add("message", type);
-            div.textContent = text;
-            chat.appendChild(div);
-            chat.scrollTop = chat.scrollHeight;
-        }
-
-        function updateTypingIndicator() {
-            if (currentlyTyping.size > 0) {
-                const users = Array.from(currentlyTyping);
-                if (users.length === 1) {
-                    typingIndicator.textContent = `${users[0]} is typing...`;
-                } else if (users.length === 2) {
-                    typingIndicator.textContent = `${users[0]} and ${users[1]} are typing...`;
-                } else {
-                    typingIndicator.textContent = `${users.length} people are typing...`;
-                }
-                typingIndicator.classList.add('show');
-            } else {
-                typingIndicator.classList.remove('show');
-            }
-        }
-
-        socket.on('user_typing', function(data) {
-            if (data.is_typing) {
-                currentlyTyping.add(data.username);
-            } else {
-                currentlyTyping.delete(data.username);
-            }
-            updateTypingIndicator();
-        });
-
-        input.addEventListener('input', function() {
-            socket.emit('typing', { is_typing: true });
-            
-            clearTimeout(typingTimeout);
-            typingTimeout = setTimeout(() => {
-                socket.emit('typing', { is_typing: false });
-            }, 2000);
-        });
-
-        input.addEventListener('blur', function() {
-            socket.emit('typing', { is_typing: false });
-            clearTimeout(typingTimeout);
-        });
-
-        // LATENCY TRACKING
-let pendingLatency = {};   // messageId → send timestamp
-
-function generateId() {
-    return Math.random().toString(36).substring(2, 10);
-}
-
-// Override the send logic
-form.addEventListener("submit", function(e) {
-    e.preventDefault();
-    if (!input.value) return;
-
-    const msgId = generateId();
-    const clientSentTime = performance.now();
-    pendingLatency[msgId] = clientSentTime;
-
-    socket.emit("chat_message", {
-        id: msgId,
-        username: username,
-        message: input.value,
-        client_sent: clientSentTime
-    });
-
-    addMessage(`You: ${input.value}`, "me");
-    input.value = "";
-
-    socket.emit('typing', { is_typing: false });
-    clearTimeout(typingTimeout);
-});
-
-// Receiving message (from server)
-socket.on("chat", function(data) {
-
-    const clientReceivedTime = performance.now();
-    const serverReceived = data.server_received;
-    const serverBroadcast = data.server_broadcast;
-
-    // Compute latency only for your own messages
-    if (pendingLatency[data.id]) {
-        const clientSent = pendingLatency[data.id];
-
-        const c2s = serverReceived - clientSent;
-        const s2c = clientReceivedTime - serverBroadcast;
-        const total = clientReceivedTime - clientSent;
-
-        console.log(`📡 Latency for message ${data.id}`);
-        console.log(`Client → Server: ${c2s.toFixed(2)} ms`);
-        console.log(`Server → Client: ${s2c.toFixed(2)} ms`);
-        console.log(`End-to-End: ${total.toFixed(2)} ms`);
-        console.log("-------------------------------------");
-
-        delete pendingLatency[data.id];
+        recognition.onresult = function(event) {
+            const transcript = event.results[0][0].transcript;
+            input.value = transcript;
+            isRecording = false;
+            document.getElementById('voiceBtn').classList.remove('recording');
+        };
+        
+        recognition.onerror = function(event) {
+            console.error('Speech recognition error:', event.error);
+            isRecording = false;
+            document.getElementById('voiceBtn').classList.remove('recording');
+            alert('Voice recognition error: ' + event.error);
+        };
+        
+        recognition.onend = function() {
+            isRecording = false;
+            document.getElementById('voiceBtn').classList.remove('recording');
+        };
     }
 
-    // Do not duplicate your own message visually
-    if (data.username === username) return;
-
-    displayMessage(data.username, data.message, data.timestamp);
-});
-
-
-        socket.on("system", function(msg) {
-            addMessage(msg, "system");
+    // Display message history
+    socket.on('message_history', function(messages) {
+        console.log(`📥 Loaded ${messages.length} messages from history`);
+        messages.forEach(msg => {
+            displayMessage(msg.username, msg.message, msg.timestamp, false);
         });
+    });
 
-        // AI Functions
-        function toggleAI() {
-            const panel = document.getElementById('aiPanel');
-            panel.classList.toggle('show');
+    function displayMessage(user, message, timestamp, isNew = true) {
+        const div = document.createElement("div");
+        const time = timestamp ? new Date(timestamp).toLocaleTimeString() : '';
+        
+        if (user === username) {
+            div.classList.add("message", "me");
+            div.innerHTML = `You: ${message}<span class="timestamp">${time}</span>`;
+        } else {
+            div.classList.add("message", "other");
+            div.innerHTML = `<strong>${user}</strong>: ${message}<span class="timestamp">${time}</span>`;
         }
+        
+        chat.appendChild(div);
+        chat.scrollTop = chat.scrollHeight;
+    }
 
-        async function getSummary() {
-            const resultDiv = document.getElementById('aiResult');
-            resultDiv.innerHTML = '<p>🤖 Generating summary...</p>';
-            resultDiv.classList.add('show');
-            
-            try {
-                const response = await fetch('/api/summarize', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({limit: 30})
-                });
-                const data = await response.json();
-                
-                if (data.error) {
-                    resultDiv.innerHTML = `<h4>❌ Error</h4><p>${data.error}</p>`;
-                } else {
-                    resultDiv.innerHTML = `
-                        <h4>📝 Summary (${data.message_count} messages)</h4>
-                        <p>${data.summary}</p>
-                        <button class="ai-btn small" id="speakSummaryBtn">🔊 Read Aloud</button>
-                    `;
-                    // Add event listener to avoid string escaping issues
-                    document.getElementById('speakSummaryBtn').addEventListener('click', function() {
-                        speakText(data.summary);
-                    });
-                }
-            } catch (error) {
-                resultDiv.innerHTML = `<h4>❌ Error</h4><p>${error.message}</p>`;
-            }
-        }
+    function addMessage(text, type) {
+        const div = document.createElement("div");
+        div.classList.add("message", type);
+        div.textContent = text;
+        chat.appendChild(div);
+        chat.scrollTop = chat.scrollHeight;
+    }
 
-        function showAskBox() {
-            const askBox = document.getElementById('askBox');
-            askBox.style.display = askBox.style.display === 'none' ? 'block' : 'none';
-            if (askBox.style.display === 'block') {
-                document.getElementById('aiQuestion').focus();
-            }
-        }
-
-        async function askAI() {
-            const question = document.getElementById('aiQuestion').value.trim();
-            if (!question) return;
-            
-            const resultDiv = document.getElementById('aiResult');
-            resultDiv.innerHTML = '<p>🤖 Thinking...</p>';
-            resultDiv.classList.add('show');
-            
-            try {
-                const response = await fetch('/api/ask', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({question: question, limit: 50})
-                });
-                const data = await response.json();
-                
-                if (data.error) {
-                    resultDiv.innerHTML = `<h4>❌ Error</h4><p>${data.error}</p>`;
-                } else {
-                    resultDiv.innerHTML = `
-                        <h4>❓ ${data.question}</h4>
-                        <p><strong>Answer:</strong> ${data.answer}</p>
-                        <button class="ai-btn small" id="speakAnswerBtn">🔊 Read Aloud</button>
-                    `;
-                    // Add event listener to avoid string escaping issues
-                    document.getElementById('speakAnswerBtn').addEventListener('click', function() {
-                        speakText(data.answer);
-                    });
-                }
-                document.getElementById('aiQuestion').value = '';
-            } catch (error) {
-                resultDiv.innerHTML = `<h4>❌ Error</h4><p>${error.message}</p>`;
-            }
-        }
-
-        async function getSmartReplies() {
-            const repliesDiv = document.getElementById('smartReplies');
-            repliesDiv.innerHTML = '<p style="color: #666;">🤖 Generating suggestions...</p>';
-            
-            try {
-                const response = await fetch('/api/smart-replies');
-                const data = await response.json();
-                
-                if (data.error) {
-                    repliesDiv.innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
-                } else {
-                    repliesDiv.innerHTML = data.suggestions.map(s => 
-                        `<span class="smart-reply-chip" onclick="useSmartReply('${s.replace(/'/g, "\\'")}')">${s}</span>`
-                    ).join('');
-                }
-            } catch (error) {
-                repliesDiv.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
-            }
-        }
-
-        async function getInsights() {
-            const resultDiv = document.getElementById('aiResult');
-            resultDiv.innerHTML = '<p>🤖 Analyzing conversation...</p>';
-            resultDiv.classList.add('show');
-            
-            try {
-                const response = await fetch('/api/insights');
-                const data = await response.json();
-                
-                if (data.error) {
-                    resultDiv.innerHTML = `<h4>❌ Error</h4><p>${data.error}</p>`;
-                } else {
-                    resultDiv.innerHTML = `
-                        <h4>📊 Conversation Insights</h4>
-                        <p><strong>Sentiment:</strong> ${data.sentiment}</p>
-                        <p><strong>Topics:</strong> ${data.topics.join(', ')}</p>
-                        <p><strong>Summary:</strong> ${data.summary}</p>
-                    `;
-                }
-            } catch (error) {
-                resultDiv.innerHTML = `<h4>❌ Error</h4><p>${error.message}</p>`;
-            }
-        }
-
-        function useSmartReply(reply) {
-            input.value = reply;
-            input.focus();
-        }
-
-        // Voice Functions
-        function toggleVoice() {
-            if (!recognition) {
-                alert('Speech recognition is not supported in your browser. Please use Chrome, Edge, or Safari.');
-                return;
-            }
-            
-            if (isRecording) {
-                recognition.stop();
-                isRecording = false;
-                document.getElementById('voiceBtn').classList.remove('recording');
+    function updateTypingIndicator() {
+        if (currentlyTyping.size > 0) {
+            const users = Array.from(currentlyTyping);
+            if (users.length === 1) {
+                typingIndicator.textContent = `${users[0]} is typing...`;
+            } else if (users.length === 2) {
+                typingIndicator.textContent = `${users[0]} and ${users[1]} are typing...`;
             } else {
-                try {
-                    recognition.start();
-                    isRecording = true;
-                    document.getElementById('voiceBtn').classList.add('recording');
-                } catch (error) {
-                    console.error('Recognition start error:', error);
-                }
+                typingIndicator.textContent = `${users.length} people are typing...`;
             }
+            typingIndicator.classList.add('show');
+        } else {
+            typingIndicator.classList.remove('show');
         }
+    }
 
-        function speakText(text) {
-            if (!('speechSynthesis' in window)) {
-                alert('Text-to-speech is not supported in your browser. Please use Chrome, Edge, or Safari.');
-                return;
+    function showLatency(latency) {
+        // Update stats
+        latencyStats.total += latency;
+        latencyStats.count++;
+        latencyStats.min = Math.min(latencyStats.min, latency);
+        latencyStats.max = Math.max(latencyStats.max, latency);
+        latencyStats.recent.push(latency);
+        if (latencyStats.recent.length > 10) {
+            latencyStats.recent.shift();
+        }
+        
+        const avg = latencyStats.total / latencyStats.count;
+        const recentAvg = latencyStats.recent.reduce((a, b) => a + b, 0) / latencyStats.recent.length;
+        
+        // Determine color based on latency
+        let className = 'good';
+        let emoji = '🟢';
+        if (latency > 200) {
+            className = 'bad';
+            emoji = '🔴';
+        } else if (latency > 100) {
+            className = 'ok';
+            emoji = '🟡';
+        }
+        
+        // Display latency
+        latencyDisplay.className = `show ${className}`;
+        latencyDisplay.innerHTML = `
+            ${emoji} <strong>${latency.toFixed(0)}ms</strong><br>
+            <small>Avg: ${recentAvg.toFixed(0)}ms | Min: ${latencyStats.min.toFixed(0)}ms | Max: ${latencyStats.max.toFixed(0)}ms</small>
+        `;
+        
+        // Auto-hide after 3 seconds
+        setTimeout(() => {
+            latencyDisplay.classList.remove('show');
+        }, 3000);
+    }
+
+    socket.on('user_typing', function(data) {
+        if (data.is_typing) {
+            currentlyTyping.add(data.username);
+        } else {
+            currentlyTyping.delete(data.username);
+        }
+        updateTypingIndicator();
+    });
+
+    input.addEventListener('input', function() {
+        socket.emit('typing', { is_typing: true });
+        
+        clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => {
+            socket.emit('typing', { is_typing: false });
+        }, 2000);
+    });
+
+    input.addEventListener('blur', function() {
+        socket.emit('typing', { is_typing: false });
+        clearTimeout(typingTimeout);
+    });
+
+    form.addEventListener("submit", function(e) {
+        e.preventDefault();
+        if (input.value) {
+            const messageText = input.value;
+            const clientSendTime = performance.now();
+            
+            // Store send time with a unique key (message + timestamp)
+            const messageKey = `${messageText}_${clientSendTime}`;
+            messageSendTimes.set(messageKey, clientSendTime);
+            
+            // Also store just by content for fallback
+            if (!messageSendTimes.has(messageText)) {
+                messageSendTimes.set(messageText, clientSendTime);
             }
             
-            // Cancel any ongoing speech
+            console.log(`📤 [SEND] Message: "${messageText.substring(0, 30)}${messageText.length > 30 ? '...' : ''}"`);
+            console.log(`📤 [SEND] Client timestamp: ${clientSendTime.toFixed(2)}ms`);
+            
+            socket.send(messageText);
+            input.value = "";
+            
+            socket.emit('typing', { is_typing: false });
+            clearTimeout(typingTimeout);
+        }
+    });
+
+    socket.on("chat", function(data) {
+        const receiveTime = performance.now();
+        
+        // Try to find matching send time
+        const messageKey = `${data.content}_${data.client_sent_time}`;
+        let sendTime = messageSendTimes.get(messageKey) || messageSendTimes.get(data.content);
+        
+        // Calculate latency if this is our own message coming back
+        if (data.username === username && sendTime) {
+            const roundTripLatency = receiveTime - sendTime;
+            
+            console.log('═══════════════════════════════════════════════════');
+            console.log(`⚡ ROUND TRIP LATENCY MEASUREMENT`);
+            console.log('═══════════════════════════════════════════════════');
+            console.log(`📨 Message: "${data.content.substring(0, 50)}${data.content.length > 50 ? '...' : ''}"`);
+            console.log(`⏱️  Round-trip time: ${roundTripLatency.toFixed(2)}ms`);
+            console.log(`📤 Sent at: ${sendTime.toFixed(2)}ms`);
+            console.log(`📥 Received at: ${receiveTime.toFixed(2)}ms`);
+            console.log(`✅ Status: Message delivered successfully`);
+            console.log('═══════════════════════════════════════════════════');
+            
+            // Show visual latency indicator
+            showLatency(roundTripLatency);
+            
+            // Clean up send time tracking
+            messageSendTimes.delete(messageKey);
+            messageSendTimes.delete(data.content);
+            
+            // Don't display own message again in chat (server already has it)
+            return;
+        }
+        
+        // Display messages from other users
+        if (data.username !== username) {
+            console.log(`📨 [RECEIVE] Message from ${data.username}: "${data.content.substring(0, 30)}${data.content.length > 30 ? '...' : ''}"`);
+            displayMessage(data.username, data.content, data.timestamp, true);
+        }
+    });
+
+    socket.on("system", function(msg) {
+        console.log(`ℹ️  System message: ${msg}`);
+        addMessage(msg, "system");
+    });
+    
+    // Monitor connection status
+    socket.on('connect', function() {
+        console.log('✅ Connected to server');
+        console.log('═══════════════════════════════════════════════════');
+        console.log('💡 TIP: Send a message to see round-trip latency!');
+        console.log('═══════════════════════════════════════════════════');
+    });
+    
+    socket.on('disconnect', function() {
+        console.log('❌ Disconnected from server');
+    });
+    
+    socket.on('reconnect', function(attemptNumber) {
+        console.log(`🔄 Reconnected after ${attemptNumber} attempts`);
+    });
+
+    // AI Functions
+    function toggleAI() {
+        const panel = document.getElementById('aiPanel');
+        panel.classList.toggle('show');
+    }
+
+    async function getSummary() {
+        const resultDiv = document.getElementById('aiResult');
+        resultDiv.innerHTML = '<p>🤖 Generating summary...</p>';
+        resultDiv.classList.add('show');
+        
+        const startTime = performance.now();
+        console.log('📊 Requesting AI summary...');
+        
+        try {
+            const response = await fetch('/api/summarize', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({limit: 30})
+            });
+            const data = await response.json();
+            
+            const duration = performance.now() - startTime;
+            console.log(`✅ Summary generated in ${duration.toFixed(2)}ms`);
+            
+            if (data.error) {
+                resultDiv.innerHTML = `<h4>❌ Error</h4><p>${data.error}</p>`;
+            } else {
+                resultDiv.innerHTML = `
+                    <h4>📝 Summary (${data.message_count} messages)</h4>
+                    <p>${data.summary}</p>
+                    <button class="ai-btn small" id="speakSummaryBtn">🔊 Read Aloud</button>
+                `;
+                document.getElementById('speakSummaryBtn').addEventListener('click', function() {
+                    speakText(data.summary);
+                });
+            }
+        } catch (error) {
+            const duration = performance.now() - startTime;
+            console.error(`❌ Summary failed after ${duration.toFixed(2)}ms:`, error);
+            resultDiv.innerHTML = `<h4>❌ Error</h4><p>${error.message}</p>`;
+        }
+    }
+
+    function showAskBox() {
+        const askBox = document.getElementById('askBox');
+        askBox.style.display = askBox.style.display === 'none' ? 'block' : 'none';
+        if (askBox.style.display === 'block') {
+            document.getElementById('aiQuestion').focus();
+        }
+    }
+
+    async function askAI() {
+        const question = document.getElementById('aiQuestion').value.trim();
+        if (!question) return;
+        
+        const resultDiv = document.getElementById('aiResult');
+        resultDiv.innerHTML = '<p>🤖 Thinking...</p>';
+        resultDiv.classList.add('show');
+        
+        const startTime = performance.now();
+        console.log(`❓ Asking AI: "${question}"`);
+        
+        try {
+            const response = await fetch('/api/ask', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({question: question, limit: 50})
+            });
+            const data = await response.json();
+            
+            const duration = performance.now() - startTime;
+            console.log(`✅ AI answered in ${duration.toFixed(2)}ms`);
+            
+            if (data.error) {
+                resultDiv.innerHTML = `<h4>❌ Error</h4><p>${data.error}</p>`;
+            } else {
+                resultDiv.innerHTML = `
+                    <h4>❓ ${data.question}</h4>
+                    <p><strong>Answer:</strong> ${data.answer}</p>
+                    <button class="ai-btn small" id="speakAnswerBtn">🔊 Read Aloud</button>
+                `;
+                document.getElementById('speakAnswerBtn').addEventListener('click', function() {
+                    speakText(data.answer);
+                });
+            }
+            document.getElementById('aiQuestion').value = '';
+        } catch (error) {
+            const duration = performance.now() - startTime;
+            console.error(`❌ AI question failed after ${duration.toFixed(2)}ms:`, error);
+            resultDiv.innerHTML = `<h4>❌ Error</h4><p>${error.message}</p>`;
+        }
+    }
+
+    async function getSmartReplies() {
+        const repliesDiv = document.getElementById('smartReplies');
+        repliesDiv.innerHTML = '<p style="color: #666;">🤖 Generating suggestions...</p>';
+        
+        const startTime = performance.now();
+        console.log('💡 Requesting smart replies...');
+        
+        try {
+            const response = await fetch('/api/smart-replies');
+            const data = await response.json();
+            
+            const duration = performance.now() - startTime;
+            console.log(`✅ Smart replies generated in ${duration.toFixed(2)}ms`);
+            
+            if (data.error) {
+                repliesDiv.innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
+            } else {
+                repliesDiv.innerHTML = data.suggestions.map(s => 
+                    `<span class="smart-reply-chip" onclick="useSmartReply('${s.replace(/'/g, "\\'")}')">${s}</span>`
+                ).join('');
+            }
+        } catch (error) {
+            const duration = performance.now() - startTime;
+            console.error(`❌ Smart replies failed after ${duration.toFixed(2)}ms:`, error);
+            repliesDiv.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+        }
+    }
+
+    function useSmartReply(reply) {
+        input.value = reply;
+        input.focus();
+    }
+
+    // Voice Functions
+    function toggleVoice() {
+        if (!recognition) {
+            alert('Speech recognition is not supported in your browser. Please use Chrome, Edge, or Safari.');
+            return;
+        }
+        
+        if (isRecording) {
+            recognition.stop();
+            isRecording = false;
+            document.getElementById('voiceBtn').classList.remove('recording');
+        } else {
+            try {
+                recognition.start();
+                isRecording = true;
+                document.getElementById('voiceBtn').classList.add('recording');
+            } catch (error) {
+                console.error('Recognition start error:', error);
+            }
+        }
+    }
+
+    function speakText(text) {
+        if (!('speechSynthesis' in window)) {
+            alert('Text-to-speech is not supported in your browser. Please use Chrome, Edge, or Safari.');
+            return;
+        }
+        
+        window.speechSynthesis.cancel();
+        
+        function speak() {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 0.9;
+            utterance.pitch = 1.0;
+            utterance.volume = 1.0;
+            utterance.lang = 'en-US';
+            
+            const voices = window.speechSynthesis.getVoices();
+            if (voices.length > 0) {
+                const englishVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
+                utterance.voice = englishVoice;
+            }
+            
+            utterance.onstart = function() {
+                console.log('Speech started');
+            };
+            
+            utterance.onend = function() {
+                console.log('Speech ended');
+            };
+            
+            utterance.onerror = function(event) {
+                console.error('Speech error:', event);
+                alert('Speech error: ' + event.error);
+            };
+            
+            window.speechSynthesis.speak(utterance);
+        }
+        
+        if (window.speechSynthesis.getVoices().length === 0) {
+            window.speechSynthesis.addEventListener('voiceschanged', speak, { once: true });
+        } else {
+            speak();
+        }
+    }
+
+    function stopSpeaking() {
+        if (window.speechSynthesis) {
             window.speechSynthesis.cancel();
-            
-            // Wait for voices to be loaded
-            function speak() {
-                const utterance = new SpeechSynthesisUtterance(text);
-                utterance.rate = 0.9;  // Slightly slower for clarity
-                utterance.pitch = 1.0;
-                utterance.volume = 1.0;
-                utterance.lang = 'en-US';
-                
-                // Get voices and use a good one if available
-                const voices = window.speechSynthesis.getVoices();
-                if (voices.length > 0) {
-                    // Try to find a good English voice
-                    const englishVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
-                    utterance.voice = englishVoice;
-                }
-                
-                utterance.onstart = function() {
-                    console.log('Speech started');
-                };
-                
-                utterance.onend = function() {
-                    console.log('Speech ended');
-                };
-                
-                utterance.onerror = function(event) {
-                    console.error('Speech error:', event);
-                    alert('Speech error: ' + event.error);
-                };
-                
-                window.speechSynthesis.speak(utterance);
-            }
-            
-            // Ensure voices are loaded
-            if (window.speechSynthesis.getVoices().length === 0) {
-                window.speechSynthesis.addEventListener('voiceschanged', speak, { once: true });
-            } else {
-                speak();
-            }
+            console.log('Speech stopped manually');
         }
+    }
 
-        function stopSpeaking() {
-            if (window.speechSynthesis) {
-                window.speechSynthesis.cancel();
-                console.log('Speech stopped manually');
-            }
+    document.addEventListener('keypress', function(e) {
+        if (e.target.id === 'aiQuestion' && e.key === 'Enter') {
+            askAI();
         }
+    });
 
-        // Allow Enter key in ask box
-        document.addEventListener('keypress', function(e) {
-            if (e.target.id === 'aiQuestion' && e.key === 'Enter') {
-                askAI();
-            }
-        });
+    window.addEventListener('beforeunload', function() {
+        if (window.speechSynthesis) {
+            window.speechSynthesis.cancel();
+        }
+    });
 
-        // Stop speech when leaving page or logging out
-        window.addEventListener('beforeunload', function() {
-            if (window.speechSynthesis) {
-                window.speechSynthesis.cancel();
-            }
-        });
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden && window.speechSynthesis) {
+            window.speechSynthesis.cancel();
+        }
+    });
+</script>
 
-        // Stop speech when page visibility changes (tab switch, minimize)
-        document.addEventListener('visibilitychange', function() {
-            if (document.hidden && window.speechSynthesis) {
-                window.speechSynthesis.cancel();
-            }
-        });
-
-        window.addEventListener("beforeunload", function() {
-            navigator.sendBeacon("/logout");
-        });
-    </script>
 </body>
-
 </html>
-

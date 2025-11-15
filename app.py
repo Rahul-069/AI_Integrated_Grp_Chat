@@ -49,6 +49,14 @@ socketio = SocketIO(app, async_mode="threading")
 
 clients = {}
 
+latency_data = {
+    'messages': [],
+    'queue_times': [],
+    'broadcast_times': [],
+    'total_times': [],
+    'batch_flush_times': []
+}
+
 # ==================== MESSAGE BATCHING SYSTEM ====================
 class MessageBatcher:
     """Batches messages for efficient database writes"""
@@ -117,6 +125,92 @@ class MessageBatcher:
                 app.logger.error(f'Batch worker error: {e}')
                 time.sleep(0.1)
     
+    def _flush_batch(self, batch):
+        if not batch:
+            return
+    
+        flush_start = time.time()
+    
+        try:
+            with app.app_context():
+                # Bulk insert messages
+                messages = [
+                    Message(
+                        content=msg['content'],
+                        user_id=msg['user_id'],
+                        timestamp=msg['timestamp']
+                    )
+                    for msg in batch
+                ]
+                
+                db.session.bulk_save_objects(messages)
+                db.session.commit()
+                
+                flush_time = (time.time() - flush_start) * 1000
+                
+                # Store batch flush time for statistics
+                latency_data['batch_flush_times'].append(flush_time)
+                
+                # Keep only last 200 entries
+                if len(latency_data['batch_flush_times']) > 200:
+                    latency_data['batch_flush_times'].pop(0)
+                
+                app.logger.info(
+                    f'📦 Batch flushed: {len(batch)} messages in {flush_time:.2f}ms '
+                    f'({flush_time/len(batch):.2f}ms per message)'
+                )
+                
+                # Invalidate cache after batch write
+                invalidate_message_cache()
+                
+        except Exception as e:
+            app.logger.error(f'Batch flush error: {e}')
+            with app.app_context():
+                db.session.rollback()
+
+    # def _flush_batch(self, batch):
+    #     if not batch:
+    #         return
+        
+    #     flush_start = time.time()
+        
+    #     try:
+    #         with app.app_context():
+    #             # Bulk insert messages
+    #             messages = [
+    #                 Message(
+    #                     content=msg['content'],
+    #                     user_id=msg['user_id'],
+    #                     timestamp=msg['timestamp']
+    #                 )
+    #                 for msg in batch
+    #             ]
+                
+    #             db.session.bulk_save_objects(messages)
+    #             db.session.commit()
+                
+    #             flush_time = (time.time() - flush_start) * 1000
+                
+    #             # Store batch flush time for statistics
+    #             latency_data['batch_flush_times'].append(flush_time)
+                
+    #             # Keep only last 200 entries
+    #             if len(latency_data['batch_flush_times']) > 200:
+    #                 latency_data['batch_flush_times'].pop(0)
+                
+    #             app.logger.info(
+    #                 f'📦 Batch flushed: {len(batch)} messages in {flush_time:.2f}ms '
+    #                 f'({flush_time/len(batch):.2f}ms per message)'
+    #             )
+                
+    #             # Invalidate cache after batch write
+    #             invalidate_message_cache()
+                
+    #     except Exception as e:
+    #         app.logger.error(f'Batch flush error: {e}')
+    #         with app.app_context():
+    #             db.session.rollback()
+
     def _flush_batch(self, batch):
         """Flush a batch of messages to database"""
         if not batch:
@@ -328,12 +422,12 @@ def chat():
     
     try:
         recent_messages = get_recent_messages(limit=50)
-        return render_template("chat.html", 
+        return render_template("latenc_test_batched.html", 
                              username=session["username"],
                              recent_messages=recent_messages)
     except Exception as e:
         app.logger.error(f'Chat page error: {e}')
-        return render_template("chat.html", 
+        return render_template("new_chat.html", 
                              username=session["username"],
                              recent_messages=[])
 
@@ -478,23 +572,25 @@ def handle_message(msg):
         
         user = User.query.filter_by(username=username).first()
         if user:
-            # Time database operation
-            db_start = time.time()
-            new_message = Message(content=msg, user_id=user.id)
-            db.session.add(new_message)
-            db.session.commit()
-            db_time = (time.time() - db_start) * 1000
+            # Create timestamp
+            timestamp = datetime.utcnow()
             
-            # Invalidate cache
-            cache_start = time.time()
-            invalidate_message_cache()
-            cache_time = (time.time() - cache_start) * 1000
+            # Add to batch queue (non-blocking)
+            queue_start = time.time()
+            message_batcher.add_message(msg, user.id, timestamp)
+            queue_time = (time.time() - queue_start) * 1000
             
-            # Prepare message with timestamp
-            message_data = new_message.to_dict()
-            message_data['server_timestamp'] = time.time()
+            # Prepare message data for immediate broadcast
+            message_data = {
+                'id': None,  # Will be set after DB write
+                'content': msg,
+                'username': username,
+                'timestamp': timestamp.isoformat(),
+                'server_timestamp': time.time(),
+                'client_sent_time': time.time()  # For client-side latency calculation
+            }
             
-            # Broadcast message
+            # Broadcast immediately (don't wait for DB)
             broadcast_start = time.time()
             emit('chat', message_data, broadcast=True)
             broadcast_time = (time.time() - broadcast_start) * 1000
@@ -503,32 +599,29 @@ def handle_message(msg):
             total_time = (time.time() - start_time) * 1000
             
             # Store latency data (keep last 200 entries)
-            latency_data['db_times'].append(db_time)
-            latency_data['cache_times'].append(cache_time)
+            latency_data['queue_times'].append(queue_time)
             latency_data['broadcast_times'].append(broadcast_time)
             latency_data['total_times'].append(total_time)
             latency_data['messages'].append(msg[:50])
             
             # Keep only last 200 entries
             if len(latency_data['total_times']) > 200:
-                latency_data['db_times'].pop(0)
-                latency_data['cache_times'].pop(0)
+                latency_data['queue_times'].pop(0)
                 latency_data['broadcast_times'].pop(0)
                 latency_data['total_times'].pop(0)
                 latency_data['messages'].pop(0)
             
             # Log performance metrics
             app.logger.info(
-                f'⏱️  Message #{len(latency_data["total_times"])} - '
+                f'⚡ Message #{len(latency_data["total_times"])} - '
                 f'User: {username}, '
-                f'DB: {db_time:.2f}ms, '
-                f'Cache: {cache_time:.2f}ms, '
+                f'Queue: {queue_time:.2f}ms, '
                 f'Broadcast: {broadcast_time:.2f}ms, '
-                f'Total: {total_time:.2f}ms'
+                f'Total: {total_time:.2f}ms '
+                f'(DB batch pending)'
             )
             
     except Exception as e:
-        db.session.rollback()
         app.logger.error(f'Message error: {e}')
         emit('error', {'message': 'Failed to send message'})
 
@@ -574,18 +667,7 @@ def cleanup():
 import atexit
 atexit.register(cleanup)
 
-import time
-from threading import Thread
-
-# Store latency data
-latency_data = {
-    'messages': [],
-    'db_times': [],
-    'cache_times': [],
-    'broadcast_times': [],
-    'total_times': []
-}
-
+# ==================== PERFORMANCE TESTING ====================
 @app.route("/test-latency")
 def test_latency():
     """Latency testing dashboard"""
@@ -605,25 +687,19 @@ def get_latency_stats():
             "message": "No latency data collected yet"
         })
     
-    db_times = latency_data['db_times']
-    cache_times = latency_data['cache_times']
+    queue_times = latency_data['queue_times']
     broadcast_times = latency_data['broadcast_times']
     total_times = latency_data['total_times']
+    batch_flush_times = latency_data['batch_flush_times']
     
-    return jsonify({
+    stats = {
         "status": "success",
         "message_count": len(total_times),
-        "db": {
-            "average": sum(db_times) / len(db_times),
-            "min": min(db_times),
-            "max": max(db_times),
-            "recent_10": db_times[-10:]
-        },
-        "cache": {
-            "average": sum(cache_times) / len(cache_times),
-            "min": min(cache_times),
-            "max": max(cache_times),
-            "recent_10": cache_times[-10:]
+        "queue": {
+            "average": sum(queue_times) / len(queue_times),
+            "min": min(queue_times),
+            "max": max(queue_times),
+            "recent_10": queue_times[-10:]
         },
         "broadcast": {
             "average": sum(broadcast_times) / len(broadcast_times),
@@ -637,7 +713,18 @@ def get_latency_stats():
             "max": max(total_times),
             "recent_10": total_times[-10:]
         }
-    })
+    }
+    
+    # Add batch stats if available
+    if batch_flush_times:
+        stats["batch"] = {
+            "average": sum(batch_flush_times) / len(batch_flush_times),
+            "min": min(batch_flush_times),
+            "max": max(batch_flush_times),
+            "recent_10": batch_flush_times[-10:]
+        }
+    
+    return jsonify(stats)
 
 @app.route("/api/reset-latency-stats", methods=["POST"])
 def reset_latency_stats():
@@ -646,10 +733,10 @@ def reset_latency_stats():
         return jsonify({"error": "Unauthorized"}), 401
     
     latency_data['messages'].clear()
-    latency_data['db_times'].clear()
-    latency_data['cache_times'].clear()
+    latency_data['queue_times'].clear()
     latency_data['broadcast_times'].clear()
     latency_data['total_times'].clear()
+    latency_data['batch_flush_times'].clear()
     
     app.logger.info("Latency statistics reset")
     return jsonify({"status": "success", "message": "Statistics reset"})
@@ -663,6 +750,3 @@ if __name__ == "__main__":
         debug=False,
         allow_unsafe_werkzeug=True
     )
-
-
-

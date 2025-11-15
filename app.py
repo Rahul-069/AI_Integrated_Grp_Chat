@@ -422,7 +422,7 @@ def chat():
     
     try:
         recent_messages = get_recent_messages(limit=50)
-        return render_template("latenc_test_batched.html", 
+        return render_template("latency_test_batched.html", 
                              username=session["username"],
                              recent_messages=recent_messages)
     except Exception as e:
@@ -750,3 +750,4 @@ if __name__ == "__main__":
         debug=False,
         allow_unsafe_werkzeug=True
     )
+

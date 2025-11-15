@@ -454,7 +454,7 @@ def handle_message(msg):
     if not username:
         return
     
-    # try:
+    try:
     #     if msg == "/quit":
     #         emit('system', f'{username} left the chat', broadcast=True)
     #         return
@@ -530,3 +530,4 @@ if __name__ == "__main__":
         debug=False,
         allow_unsafe_werkzeug=True
     )
+
